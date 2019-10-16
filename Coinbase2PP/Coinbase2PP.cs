@@ -205,7 +205,7 @@ namespace Coinbase2PP
 
         static void DisplayHelper()
         {
-            Console.WriteLine("Coinbase2CS -i FILEPATH [-d DIRECTORY]");
+            Console.WriteLine("Coinbase2PP -i FILEPATH [-d DIRECTORY]");
             Finish();
         }
 
