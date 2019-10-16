@@ -72,7 +72,7 @@ namespace Coinbase2PP
         {
             List<PortofolioPerformanceCSV> ppRecords =
                 new List<PortofolioPerformanceCSV>();
-            foreach (CoinbaseCSV rec in records)
+            foreach (CoinbaseCSV rec in records.Where(r => !string.IsNullOrEmpty(r.TransferTotal)))
             {
                 ppRecords.Add(new PortofolioPerformanceCSV()
                 {
