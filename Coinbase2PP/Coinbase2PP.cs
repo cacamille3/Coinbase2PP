@@ -9,37 +9,60 @@ namespace Coinbase2PP
 {
     class Coinbase2PP
     {
-        private const string tsp = "\nTimestamp";
+        public enum CoinbaseCsvType
+        {
+            Unknown,
+            Coinbase,
+            CoinbasePro
+        }
 
-        static List<CoinbaseCSV> ReadCoinbaseCSV(string filePath,
-                                                 bool avoidFirstLines = true)
+        //Coinbase CSV starts with "Transactions" but Data with "Timestamp"
+        private const string CoinbaseFirstColumn = "Transactions";
+        private const string CoinbaseFirstDataColumn = "\nTimestamp";
+
+        //CoinbasePro CSV starts with "trade id" and is the start of the Data
+        private const string CoinbaseProFirstColumn = "trade id";
+
+        private CsvHelper.Configuration.Configuration cfg;
+
+        public void InitCsvHelperConfig()
+        {
+            cfg = new CsvHelper.Configuration.Configuration()
+            {
+                   HasHeaderRecord = true,
+                   IgnoreBlankLines = true,
+                   HeaderValidated = null,
+                   MissingFieldFound = null,
+            };
+        }
+
+        private List<CoinbaseProCSV> ReadCoinbaseProCSV(string filePath)
+        {
+            using StreamReader tr = new StreamReader(filePath);
+            using CsvReader csvReader = new CsvReader(tr, cfg, false);
+            return csvReader.GetRecords<CoinbaseProCSV>().ToList();
+        }
+
+        private List<CoinbaseCSV> ReadCoinbaseCSV(string filePath,
+                                                  bool avoidFirstLines = true)
         {
             using TextReader reader = new StreamReader(filePath);
 
             string data = reader.ReadToEnd();
             if (avoidFirstLines)
             {
-                int dataIdx = data.IndexOf(tsp,
+                int dataIdx = data.IndexOf(CoinbaseFirstDataColumn,
                                            StringComparison.Ordinal);
                 data = data[(dataIdx+1)..];
             }
-
-            CsvHelper.Configuration.Configuration cfg =
-                new CsvHelper.Configuration.Configuration()
-                {
-                    HasHeaderRecord = true,
-                    IgnoreBlankLines = true,
-                    HeaderValidated = null,
-                    MissingFieldFound = null,
-                };
 
             using TextReader tr = new StringReader(data);
             using CsvReader csvReader = new CsvReader(tr, cfg, false);
             return csvReader.GetRecords<CoinbaseCSV>().ToList();
         }
 
-        protected static string GetPPSecurityName(string cryptoCurrency,
-                                                  string currency)
+        private string GetPPSecurityName(string cryptoCurrency,
+                                         string currency)
         {
             if (cryptoCurrency == CoinbaseCurrency.BTC.ToString() ||
                 cryptoCurrency == CoinbaseCurrency.LTC.ToString() ||
@@ -52,7 +75,7 @@ namespace Coinbase2PP
             return null;
         }
 
-        static string GetPPType(string amount)
+        private string GetPPType(string amount)
         {
             if (amount.StartsWith('-'))
             {
@@ -61,32 +84,61 @@ namespace Coinbase2PP
             return PPType.Buy.ToString();
         }
 
-        static string GetPPShares(string amount)
+        private string GetPPAbs(string value)
         {
-            double parsed = double.Parse(amount, CultureInfo.InvariantCulture);
+            double parsed = double.Parse(value, CultureInfo.InvariantCulture);
             return Math.Abs(parsed).ToString();
         }
 
-        static bool WritePortofolioPerformanceCSV(List<CoinbaseCSV> records,
-                                                  string filePath)
+        private List<PortofolioPerformanceCSV> GetPPRecordsFromCoinbaseRecords(List<CoinbaseCSV> records)
         {
             List<PortofolioPerformanceCSV> ppRecords =
                 new List<PortofolioPerformanceCSV>();
-            foreach (CoinbaseCSV rec in records.Where(r => !string.IsNullOrEmpty(r.TransferTotal)))
+            foreach(CoinbaseCSV rec in records.Where(r => !string.IsNullOrEmpty(r.TransferTotal)))
             {
                 ppRecords.Add(new PortofolioPerformanceCSV()
                 {
                     Date = rec.Timestamp,
                     SecurityName = GetPPSecurityName(rec.Currency,
                                                      rec.TransferTotalCurrency),
-                    Note = rec.Notes,
+                    Note = CoinbaseCsvType.Coinbase.ToString() + ": "
+                         + rec.Notes,
                     Fees = rec.TransferFee,
                     Value = rec.TransferTotal,
                     Type = GetPPType(rec.Amount),
-                    Shares = GetPPShares(rec.Amount)
+                    Shares = GetPPAbs(rec.Amount)
                 });
             }
 
+            return ppRecords;
+        }
+
+        private List<PortofolioPerformanceCSV> GetPPRecordsFromCoinbaseProRecords(List<CoinbaseProCSV> records)
+        {
+            List<PortofolioPerformanceCSV> ppRecords =
+                new List<PortofolioPerformanceCSV>();
+            foreach (CoinbaseProCSV rec in records)
+            {
+                ppRecords.Add(new PortofolioPerformanceCSV()
+                {
+                    Date = rec.CreatedAt,
+                    SecurityName = GetPPSecurityName(rec.SizeUnit,
+                                                     rec.PriceFeeTotalUnit),
+                    Note = CoinbaseCsvType.CoinbasePro.ToString(),
+                    Fees = rec.Fee,
+                    Value = GetPPAbs(rec.Total),
+                    Type = rec.Side == "BUY" ? PPType.Buy.ToString() :
+                                               PPType.Sell.ToString(),
+                    Shares = GetPPAbs(rec.Size)
+                });
+            }
+
+            return ppRecords;
+        }
+
+        private bool WritePortofolioPerformanceCSV(List<PortofolioPerformanceCSV> ppRecords,
+                                                   string filePath)
+        {
             using (TextWriter writer = new StreamWriter(filePath))
             {
                 using CsvWriter csvWriter = new CsvWriter(writer);
@@ -96,15 +148,40 @@ namespace Coinbase2PP
             return true;
         }
 
-        static void ProcessFile(string fileIn, string fileOut)
+        public CoinbaseCsvType CheckCoinbaseCSVType(string fileIn)
+        {
+            using TextReader reader = new StreamReader(fileIn);
+            string data = reader.ReadLine();
+            if (data.StartsWith(CoinbaseFirstColumn, StringComparison.Ordinal))
+            {
+                return CoinbaseCsvType.Coinbase;
+            }
+            if (data.StartsWith(CoinbaseProFirstColumn, StringComparison.Ordinal))
+            {
+                return CoinbaseCsvType.CoinbasePro;
+            }
+
+            return CoinbaseCsvType.Unknown;
+        }
+
+        public void ProcessFile(CoinbaseCsvType csvType,
+                                string fileIn, string fileOut)
         {
             Console.WriteLine("################################");
-            Console.WriteLine("Parsing '{0}'!", fileIn) ;
+            Console.WriteLine("Parsing {0} - '{1}'!", csvType.ToString(), fileIn) ;
 
-            List<CoinbaseCSV> records;
+            List<CoinbaseCSV> records = null;
+            List<CoinbaseProCSV> proRecords = null;
             try
             {
-                records = ReadCoinbaseCSV(fileIn);
+                if (csvType == CoinbaseCsvType.Coinbase)
+                {
+                    records = ReadCoinbaseCSV(fileIn);
+                }
+                else if (csvType == CoinbaseCsvType.CoinbasePro)
+                {
+                    proRecords = ReadCoinbaseProCSV(fileIn);
+                }
             }
             catch (Exception e)
             {
@@ -112,24 +189,43 @@ namespace Coinbase2PP
                 return;
             }
 
-            if (records == null || !records.Any())
+            List<PortofolioPerformanceCSV> ppRecords;
+            if ((proRecords != null) && proRecords.Any())
             {
-                Console.WriteLine("NO RECORDS FOUND !");
-                return ;
+                ppRecords = GetPPRecordsFromCoinbaseProRecords(proRecords);
             }
-
-            if (!WritePortofolioPerformanceCSV(records, fileOut))
+            else if (records != null && records.Any())
             {
-                Console.WriteLine("Error while converting Coinbase CSV as PP CSV !");
+                ppRecords = GetPPRecordsFromCoinbaseRecords(records);
+            }
+            else
+            {
+                Console.WriteLine("NO Coinbase RECORDS FOUND !");
                 return;
             }
 
-            Console.WriteLine("Coinbase CSV has been succesfully converted as PP CSV !");
+            if ((ppRecords == null) || !ppRecords.Any())
+            {
+                Console.WriteLine("NO PortofolioPerformance RECORDS !");
+                return;
+            }
+
+            if (!WritePortofolioPerformanceCSV(ppRecords, fileOut))
+            {
+                Console.WriteLine("Error while converting Coinbase Pro CSV as PP CSV !");
+                return;
+            }
+
             return ;
         }
+    }
 
+    class MainProgram
+    {
         static void Main(string[] args)
         {
+            Coinbase2PP coinbase2PP = new Coinbase2PP();
+
             if (args.Length < 2)
             {
                 DisplayHelper();
@@ -176,16 +272,18 @@ namespace Coinbase2PP
                     }
                 }
             }
-            catch(Exception e)
+            catch (Exception e)
             {
                 Console.WriteLine(e);
                 DisplayHelper();
                 Finish();
             }
 
+            coinbase2PP.InitCsvHelperConfig();
+
             DirectoryInfo outputDir = null;
 
-            foreach(FileInfo file in fileToProcess)
+            foreach (FileInfo file in fileToProcess)
             {
                 if (outputDir == null)
                 {
@@ -197,10 +295,30 @@ namespace Coinbase2PP
                 string fileout = string.Format("{0}/{1}{2}",
                                                outputDir,
                                                (filename + "_pp"),
-                                               file.Extension) ;
-                ProcessFile(file.FullName, fileout);
+                                               file.Extension);
+
+                Coinbase2PP.CoinbaseCsvType csvType = coinbase2PP.CheckCoinbaseCSVType(file.FullName);
+
+                switch (csvType)
+                {
+                    case Coinbase2PP.CoinbaseCsvType.Coinbase:
+                    case Coinbase2PP.CoinbaseCsvType.CoinbasePro:
+                        coinbase2PP.ProcessFile(csvType, file.FullName, fileout);
+                        break;
+
+                    case Coinbase2PP.CoinbaseCsvType.Unknown:
+                    default:
+                        InvalidFileIn(file.FullName);
+                        break;
+                }
             }
             Finish();
+        }
+
+        static void InvalidFileIn(string filename)
+        {
+            Console.WriteLine("Unrecognized Coinbase CSV FileType for '{0}' - File is ignored !",
+                filename);
         }
 
         static void DisplayHelper()
@@ -210,7 +328,7 @@ namespace Coinbase2PP
         }
 
         static void Finish()
-        { 
+        {
             Console.WriteLine("Press any key to exit !");
             Console.ReadKey();
         }
